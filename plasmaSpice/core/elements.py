@@ -173,3 +173,120 @@ class CurrentSource(Component):
         if self.exit != 0:  # current exiting node
             j = node_map[self.exit]
             vector[j] += self.current  # current flowing out adds positive current
+
+
+class Capacitor(Component):
+    """Capacitor element for circuit simulation."""
+    
+    def __init__(self, name, entrance, exit, capacitance):
+        """
+        Initialize a capacitor.
+        
+        Args:
+            name (str): Unique identifier for the capacitor
+            entrance (int): Positive terminal node number
+            exit (int): Negative terminal node number
+            capacitance (float): Capacitance value in farads
+        """
+        super().__init__(name, entrance, exit)
+        self.capacitance = capacitance
+        self._voltage = 0.0  # Store previous voltage for transient analysis
+    
+    def stamp(self, matrix, vector, node_map, vsrc_map):
+        """
+        Add capacitor contributions to the MNA matrix.
+        
+        For DC analysis, capacitor is treated as an open circuit.
+        This means it doesn't contribute to the matrix at all.
+        """
+        # In DC analysis, capacitor is an open circuit
+        # So we don't add anything to the matrix
+        pass
+    
+    def get_voltage(self, solution):
+        """
+        Get the voltage across the capacitor from a solution.
+        
+        Args:
+            solution (dict): Circuit solution containing node voltages
+            
+        Returns:
+            float: Voltage across the capacitor
+        """
+        v_pos = solution.get(f"V{self.entrance}", 0.0)
+        v_neg = solution.get(f"V{self.exit}", 0.0)
+        return v_pos - v_neg
+    
+    def update_state(self, solution):
+        """
+        Update the capacitor's internal state after a solution.
+        
+        Args:
+            solution (dict): Circuit solution containing node voltages
+        """
+        self._voltage = self.get_voltage(solution)
+
+
+class Inductor(Component):
+    """Inductor element for circuit simulation."""
+    
+    def __init__(self, name, entrance, exit, inductance):
+        """
+        Initialize an inductor.
+        
+        Args:
+            name (str): Unique identifier for the inductor
+            entrance (int): Positive terminal node number
+            exit (int): Negative terminal node number
+            inductance (float): Inductance value in henries
+        """
+        super().__init__(name, entrance, exit)
+        self.inductance = inductance
+        self._current = 0.0  # Store current for transient analysis
+    
+    def stamp(self, matrix, vector, node_map, vsrc_map):
+        """
+        Add inductor contributions to the MNA matrix.
+        
+        For DC analysis, inductor is treated as a short circuit.
+        This means connecting its terminals directly together.
+        """
+        # In DC analysis, inductor is a short circuit
+        # Add a very large conductance between the terminals
+        conductance = 1e6  # Large conductance to approximate short circuit
+        
+        if self.entrance != 0:  # positive terminal not grounded
+            i = node_map[self.entrance]
+            matrix[i, i] += conductance
+            if self.exit != 0:
+                j = node_map[self.exit]
+                matrix[i, j] -= conductance
+                matrix[j, i] -= conductance
+        
+        if self.exit != 0:  # negative terminal not grounded
+            j = node_map[self.exit]
+            matrix[j, j] += conductance
+    
+    def get_current(self, solution):
+        """
+        Get the current through the inductor from a solution.
+        
+        Args:
+            solution (dict): Circuit solution containing node voltages
+            
+        Returns:
+            float: Current through the inductor
+        """
+        v_pos = solution.get(f"V{self.entrance}", 0.0)
+        v_neg = solution.get(f"V{self.exit}", 0.0)
+        # In DC, V = 0 across inductor, so current depends on circuit
+        return self._current
+    
+    def update_state(self, solution):
+        """
+        Update the inductor's internal state after a solution.
+        
+        Args:
+            solution (dict): Circuit solution containing node voltages
+        """
+        self._current = self.get_current(solution)
