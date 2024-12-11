@@ -1,14 +1,18 @@
-# PySPICE: Python Circuit Simulation Program
+# PlasmaSpice: Python Circuit Simulation Program
 
 A Python-based circuit simulation program that implements Modified Nodal Analysis (MNA) for solving electronic circuits.
 
 ## Overview
 
-PySPICE is a circuit simulation tool that uses Modified Nodal Analysis (MNA) to solve both linear and nonlinear circuits. It supports various circuit elements and can handle both DC and transient analysis.
+PlasmaSpice is a circuit simulation tool that uses Modified Nodal Analysis (MNA) to solve both linear and nonlinear circuits. It supports various circuit elements and can handle both DC and transient analysis.
 
 ## Features
 
-- Modified Nodal Analysis (MNA) implementation
+- Modified Nodal Analysis (MNA) implementation with complete matrix formulation:
+  - G matrix: conductance matrix for passive elements
+  - B matrix: voltage source connections
+  - C matrix: current variables
+  - D matrix: for dependent sources
 - Support for basic circuit elements (R, L, C, V, I)
 - DC and transient analysis
 - Nonlinear device support
@@ -18,12 +22,23 @@ PySPICE is a circuit simulation tool that uses Modified Nodal Analysis (MNA) to 
 
 ### 1. Modified Nodal Analysis (MNA)
 
-The program uses MNA to analyze circuits by:
+The program uses MNA to analyze circuits by constructing a system of equations in the form:
 
-- Selecting a reference (ground) node
-- Applying KCL at each node
-- Adding voltage source equations
-- Handling current variables for inductors and voltage sources
+```
+[G B] [v] = [i]
+[C D] [j]   [e]
+```
+
+where:
+
+- G (n×n) contains conductances from passive elements
+- B (n×m) contains voltage source connections
+- C (m×n) is typically B^T for independent sources
+- D (m×m) is zero for independent sources
+- v is the vector of node voltages
+- j is the vector of voltage source currents
+- i is the vector of known currents
+- e is the vector of voltage source values
 
 ### 2. Data Structures and Circuit Elements
 
@@ -32,12 +47,11 @@ The program uses MNA to analyze circuits by:
 Each circuit element is represented by a Python class with properties:
 
 ```python
-class CircuitElement:
-    def __init__(self, name, node1, node2, value):
+class Component:
+    def __init__(self, name, entrance, exit):
         self.name = name      # Element identifier
-        self.node1 = node1    # Positive terminal node
-        self.node2 = node2    # Negative terminal node
-        self.value = value    # Element value (R, L, C, etc.)
+        self.entrance = entrance    # Positive terminal node
+        self.exit = exit    # Negative terminal node
 ```
 
 Specific element types inherit from the base class:
@@ -47,20 +61,6 @@ Specific element types inherit from the base class:
 - Inductor (L)
 - Voltage Source (V)
 - Current Source (I)
-
-#### Circuit Matrix Construction
-
-The MNA matrix equation has the form:
-
-```
-[A][x] = [b]
-```
-
-where:
-
-- [A] is the conductance matrix
-- [x] is the vector of unknown node voltages and branch currents
-- [b] is the vector of known current and voltage sources
 
 ### 3. Solving Circuit Equations
 
@@ -79,24 +79,6 @@ For time-dependent circuits, the program:
    - Trapezoidal Rule
    - Gear Method
 
-```python
-# Example DAE solver interface
-def solve_dae(circuit, t_start, t_end, step_size):
-    """
-    Solve circuit DAE system using numerical integration
-
-    Args:
-        circuit: Circuit object containing elements and topology
-        t_start: Start time
-        t_end: End time
-        step_size: Integration step size
-
-    Returns:
-        t: Time points
-        y: Solution vectors (node voltages and branch currents)
-    """
-```
-
 ### 4. Unit Testing
 
 The project uses Python's unittest framework for testing. Test modules are organized as follows:
@@ -112,15 +94,18 @@ tests/
 Example test case:
 
 ```python
-import unittest
+def test_voltage_divider():
+    """Test a simple voltage divider circuit"""
+    ckt = Circuit()
 
-class TestResistor(unittest.TestCase):
-    def test_resistor_stamp(self):
-        """Test resistor contribution to MNA matrix"""
-        R = Resistor("R1", 1, 0, 1000)  # 1kΩ resistor
-        matrix = np.zeros((2, 2))
-        R.stamp(matrix)
-        self.assertEqual(matrix[0,0], 1e-3)  # Check conductance value
+    # Add components
+    ckt.add_element(VoltageSource("V1", 1, 0, 5.0))  # 5V source
+    ckt.add_element(Resistor("R1", 1, 2, 1000))      # 1kΩ
+    ckt.add_element(Resistor("R2", 2, 0, 1000))      # 1kΩ
+
+    # Solve and verify
+    result = ckt.solve_dc()
+    assert abs(result["V2"] - 2.5) < 1e-10  # Node 2 should be at 2.5V
 ```
 
 ## Installation
@@ -139,19 +124,19 @@ pip install -r requirements.txt
 ## Usage Example
 
 ```python
-from pyspice import Circuit, Resistor, VoltageSource
+from plasmaSpice.core import Circuit, Resistor, VoltageSource
 
 # Create circuit
 ckt = Circuit()
 
 # Add elements
-ckt.add(VoltageSource('V1', 1, 0, 5))  # 5V source
-ckt.add(Resistor('R1', 1, 2, 1000))    # 1kΩ resistor
-ckt.add(Resistor('R2', 2, 0, 2000))    # 2kΩ resistor
+ckt.add_element(VoltageSource("V1", 1, 0, 5))  # 5V source
+ckt.add_element(Resistor("R1", 1, 2, 1000))    # 1kΩ resistor
+ckt.add_element(Resistor("R2", 2, 0, 2000))    # 2kΩ resistor
 
 # Solve
-solution = ckt.solve()
-print(f"Node voltages: {solution.voltages}")
+result = ckt.solve_dc()
+print(f"Node voltages: {result}")
 ```
 
 ## Contributing
