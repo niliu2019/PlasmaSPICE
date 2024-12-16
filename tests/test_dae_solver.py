@@ -131,12 +131,22 @@ class TestDAESolver(unittest.TestCase):
             
             return res
         
-        # Initial conditions - 更合理的初始值
-        y0 = np.array([V, 0, 0, 0, 0, 0, 0, 0])  # 电压源和第一个节点从V开始
-        yd0 = np.zeros_like(y0)                   # 初始导数全为0
+        # Initial conditions
+        y0 = np.array([V, 0, 0, 0, 0, 0, 0, 0])
+        yd0 = np.zeros_like(y0)
         
         # Solve
-        solver = DAESolver()
+        # Create solver with configuration
+        solver = DAESolver({
+            'atol': 1e-6,
+            'rtol': 1e-3,
+            'maxsteps': 10000,
+            'inith': 1e-14,
+            'verbosity': 50,
+            'suppress_alg': True,
+            'algvar': [0, 1, 1, 0, 1, 1, 0, 1]  # 标记代数和微分变量
+        })
+        
         solution = solver.solve(residual, (0, 1e-6), y0, yd0)
         
         # Save solution data
@@ -191,6 +201,16 @@ class TestDAESolver(unittest.TestCase):
         plt.tight_layout()
         plt.savefig(os.path.join(self.output_dir, 'example_lc_response.png'))
         plt.close()
+        
+        # 打印残差函数的示例值
+        y_test = np.array([V, 0, 0, 0, 0, 0, 0, 0])
+        yd_test = np.zeros_like(y_test)
+        res_test = residual(0, y_test, yd_test)
+        
+        print("\nManual DAE System Test:")
+        print("Test point y:", y_test)
+        print("Test point yd:", yd_test)
+        print("Residual:", res_test)
 
 if __name__ == '__main__':
     unittest.main() 
