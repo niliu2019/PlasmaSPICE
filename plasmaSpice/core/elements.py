@@ -1,6 +1,7 @@
 """
-Circuit elements for Modified Nodal Analysis (MNA).
+Circuit elements for Modified Nodal Analysis (MNA) and DAE systems.
 
+For DC analysis (MNA):
 Each element contributes to different parts of the MNA matrix:
 [G B] [v] = [i]
 [C D] [j]   [e]
@@ -14,6 +15,19 @@ where:
 - j: Source current vector
 - i: Known current vector
 - e: Source voltage vector
+
+For DAE system A * dx/dt = B * x + C:
+State vector order: x = [v1,...,vn, iV1,...,iVm, iL1,...,iLk]
+where:
+- v1 to vn: node voltages (from node_map)
+- iV1 to iVm: voltage source currents (from vsrc_map)
+- iL1 to iLk: inductor currents (from vsrc_map)
+
+Index mapping:
+- node_map: maps node numbers to voltage indices [0, n-1]
+- vsrc_map: maps voltage sources and inductors to current indices [n, n+m+k-1]
+  - Voltage source currents: [n, n+m-1]
+  - Inductor currents: [n+m, n+m+k-1]
 """
 
 class Component:
@@ -33,16 +47,12 @@ class Component:
         self.exit = exit
     
     def stamp(self, matrix, vector, node_map, vsrc_map):
-        """
-        Contribute to the MNA matrix equation.
+        """DC Analysis"""
+        raise NotImplementedError
         
-        Args:
-            matrix: The complete MNA matrix [G B; C D]
-            vector: The RHS vector [i; e]
-            node_map: Dictionary mapping node numbers to matrix indices
-            vsrc_map: Dictionary mapping voltage sources to matrix indices
-        """
-        raise NotImplementedError("Stamp method must be implemented by subclasses")
+    def stamp_dae(self, A, B, C, node_map, vsrc_map):
+        """DAE Analysis"""
+        raise NotImplementedError
 
 
 class Resistor(Component):
@@ -53,9 +63,6 @@ class Resistor(Component):
         Initialize a resistor.
         
         Args:
-            name (str): Unique identifier for the resistor
-            entrance (int): Positive terminal node number
-            exit (int): Negative terminal node number
             resistance (float): Resistance value in ohms
         """
         super().__init__(name, entrance, exit)
@@ -85,6 +92,21 @@ class Resistor(Component):
         if self.exit != 0:  # exit is not ground
             j = node_map[self.exit]
             matrix[j, j] += self.conductance
+    
+    def stamp_dae(self, A, B, C, node_map, vsrc_map):
+        """Resistor contribution to DAE system."""
+        
+        if self.entrance != 0:
+            i = node_map[self.entrance]
+            B[i,i] += self.conductance
+            if self.exit != 0:
+                j = node_map[self.exit]
+                B[i,j] -= self.conductance
+                B[j,i] -= self.conductance
+        
+        if self.exit != 0:
+            j = node_map[self.exit]
+            B[j,j] += self.conductance
 
 
 class VoltageSource(Component):
@@ -96,8 +118,6 @@ class VoltageSource(Component):
         
         Args:
             name (str): Unique identifier for the source
-            entrance (int): Positive terminal node number
-            exit (int): Negative terminal node number
             voltage (float): Source voltage in volts
         """
         super().__init__(name, entrance, exit)
@@ -120,21 +140,36 @@ class VoltageSource(Component):
         - e vector: Contains the voltage source value
         """
         # Get the index for this voltage source in the extended part of the matrix
-        k = len(node_map) + vsrc_map[self]
+        k = vsrc_map[self]
         
-        # Stamp B and C matrices (B[i,k] and C[k,i])
-        if self.entrance != 0:  # positive terminal not grounded
+        if self.entrance != 0:
             i = node_map[self.entrance]
-            matrix[i, k] += 1.0  # B matrix
-            matrix[k, i] += 1.0  # C matrix
+            matrix[i, k] += 1.0
+            matrix[k, i] += 1.0
         
-        if self.exit != 0:  # negative terminal not grounded
+        if self.exit != 0:
             j = node_map[self.exit]
-            matrix[j, k] -= 1.0  # B matrix
-            matrix[k, j] -= 1.0  # C matrix
+            matrix[j, k] -= 1.0
+            matrix[k, j] -= 1.0
         
         # Add voltage to RHS vector (e part)
         vector[k] = self.voltage
+    
+    def stamp_dae(self, A, B, C, node_map, vsrc_map):
+        """Voltage source contribution to DAE system."""
+        i_idx = vsrc_map[self]
+        
+        if self.entrance != 0:
+            i = node_map[self.entrance]
+            B[i_idx, i] = 1.0
+            B[i, i_idx] = -1.0
+        
+        if self.exit != 0:
+            j = node_map[self.exit]
+            B[i_idx, j] = -1.0
+            B[j, i_idx] = 1.0
+        
+        C[i_idx] = -self.voltage
 
 
 class CurrentSource(Component):
@@ -174,6 +209,22 @@ class CurrentSource(Component):
             j = node_map[self.exit]
             vector[j] += self.current  # current flowing out adds positive current
 
+    def stamp_dae(self, A, B, C, node_map, vsrc_map):
+        """
+        Current source only contributes to C vector
+        Adds current to KCL equations:
+        - Positive current entering node i
+        - Negative current leaving node j
+        """
+        
+        if self.entrance != 0:
+            i = node_map[self.entrance]
+            C[i] -= self.current
+        
+        if self.exit != 0:
+            j = node_map[self.exit]
+            C[j] += self.current
+
 
 class Capacitor(Component):
     """Capacitor element for circuit simulation."""
@@ -184,47 +235,43 @@ class Capacitor(Component):
         
         Args:
             name (str): Unique identifier for the capacitor
-            entrance (int): Positive terminal node number
-            exit (int): Negative terminal node number
             capacitance (float): Capacitance value in farads
         """
         super().__init__(name, entrance, exit)
         self.capacitance = capacitance
-        self._voltage = 0.0  # Store previous voltage for transient analysis
     
     def stamp(self, matrix, vector, node_map, vsrc_map):
-        """
-        Add capacitor contributions to the MNA matrix.
+        """DC Analysis: Capacitor as large resistance."""
+        r = 1e9  # 1GΩ
         
-        For DC analysis, capacitor is treated as an open circuit.
-        This means it doesn't contribute to the matrix at all.
-        """
-        # In DC analysis, capacitor is an open circuit
-        # So we don't add anything to the matrix
-        pass
+        if self.entrance != 0:
+            i = node_map[self.entrance]
+            matrix[i, i] += 1/r
+            if self.exit != 0:
+                j = node_map[self.exit]
+                matrix[i, j] -= 1/r
+                matrix[j, i] -= 1/r
+                matrix[j, j] += 1/r
+        elif self.exit != 0:
+            j = node_map[self.exit]
+            matrix[j, j] += 1/r
     
-    def get_voltage(self, solution):
+    def stamp_dae(self, A, B, C, node_map, vsrc_map):
         """
-        Get the voltage across the capacitor from a solution.
+        Capacitor only contribute for the A matrix
+        i = C * d(vi - vj)/dt
+        """
+        if self.entrance != 0:
+            i = node_map[self.entrance]
+            A[i,i] += self.capacitance
+            if self.exit != 0:
+                j = node_map[self.exit]
+                A[i,j] -= self.capacitance
+                A[j,i] -= self.capacitance
         
-        Args:
-            solution (dict): Circuit solution containing node voltages
-            
-        Returns:
-            float: Voltage across the capacitor
-        """
-        v_pos = solution.get(f"V{self.entrance}", 0.0)
-        v_neg = solution.get(f"V{self.exit}", 0.0)
-        return v_pos - v_neg
-    
-    def update_state(self, solution):
-        """
-        Update the capacitor's internal state after a solution.
-        
-        Args:
-            solution (dict): Circuit solution containing node voltages
-        """
-        self._voltage = self.get_voltage(solution)
+        if self.exit != 0:
+            j = node_map[self.exit]
+            A[j,j] += self.capacitance
 
 
 class Inductor(Component):
@@ -236,57 +283,44 @@ class Inductor(Component):
         
         Args:
             name (str): Unique identifier for the inductor
-            entrance (int): Positive terminal node number
-            exit (int): Negative terminal node number
             inductance (float): Inductance value in henries
         """
         super().__init__(name, entrance, exit)
         self.inductance = inductance
-        self._current = 0.0  # Store current for transient analysis
     
     def stamp(self, matrix, vector, node_map, vsrc_map):
         """
         Add inductor contributions to the MNA matrix.
-        
         For DC analysis, inductor is treated as a short circuit.
-        This means connecting its terminals directly together.
         """
         # In DC analysis, inductor is a short circuit
-        # Add a very large conductance between the terminals
-        conductance = 1e6  # Large conductance to approximate short circuit
+        # Use a very small resistance to approximate short circuit
+        r = 1e-6  # 1 μΩ
         
-        if self.entrance != 0:  # positive terminal not grounded
+        if self.entrance != 0:
             i = node_map[self.entrance]
-            matrix[i, i] += conductance
+            matrix[i, i] += 1/r
             if self.exit != 0:
                 j = node_map[self.exit]
-                matrix[i, j] -= conductance
-                matrix[j, i] -= conductance
-        
-        if self.exit != 0:  # negative terminal not grounded
+                matrix[i, j] -= 1/r
+                matrix[j, i] -= 1/r
+                matrix[j, j] += 1/r
+        elif self.exit != 0:
             j = node_map[self.exit]
-            matrix[j, j] += conductance
+            matrix[j, j] += 1/r
     
-    def get_current(self, solution):
-        """
-        Get the current through the inductor from a solution.
+    def stamp_dae(self, A, B, C, node_map, vsrc_map):
+        """Inductor contribution to DAE system."""
+        iL_idx = vsrc_map[self]
         
-        Args:
-            solution (dict): Circuit solution containing node voltages
-            
-        Returns:
-            float: Current through the inductor
-        """
-        v_pos = solution.get(f"V{self.entrance}", 0.0)
-        v_neg = solution.get(f"V{self.exit}", 0.0)
-        # In DC, V = 0 across inductor, so current depends on circuit
-        return self._current
-    
-    def update_state(self, solution):
-        """
-        Update the inductor's internal state after a solution.
+        A[iL_idx, iL_idx] = -self.inductance
         
-        Args:
-            solution (dict): Circuit solution containing node voltages
-        """
-        self._current = self.get_current(solution)
+        if self.entrance != 0:
+            i = node_map[self.entrance]
+            B[iL_idx, i] = 1.0
+            B[i, iL_idx] = 1.0
+        
+        if self.exit != 0:
+            j = node_map[self.exit]
+            B[iL_idx, j] = -1.0
+            B[j, iL_idx] = -1.0
